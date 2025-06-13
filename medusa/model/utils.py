@@ -46,7 +46,7 @@ def generate_medusa_buffers(medusa_choices, device="cuda"):
     medusa_len = len(sorted_medusa_choices) + 1
 
     # Initialize depth_counts to keep track of how many choices have a particular depth
-    depth_counts = []
+    depth_counts = []  # 表示每个深度对应的节点数
     prev_depth = 0
     for path in sorted_medusa_choices:
         depth = len(path)
@@ -56,8 +56,8 @@ def generate_medusa_buffers(medusa_choices, device="cuda"):
         prev_depth = depth
     
     # Create the attention mask for Medusa
-    medusa_attn_mask = torch.eye(medusa_len, medusa_len)
-    medusa_attn_mask[:, 0] = 1
+    medusa_attn_mask = torch.eye(medusa_len, medusa_len) # 初始化一个大小为(medusa_len, medusa_len)的单位矩阵medusa_attn_mask
+    medusa_attn_mask[:, 0] = 1                           # 将第一列全部设置为1，表示根节点对所有节点
     start = 0
     for i in range(len(depth_counts)):
         for j in range(depth_counts[i]):
