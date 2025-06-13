@@ -24,9 +24,22 @@ from medusa.model.medusa_model import MedusaModel
 from medusa.model.kv_cache import initialize_past_key_values
 from medusa.model.medusa_choices import *
 
-def medusa_forward(input_ids, model, tokenizer, medusa_choices, temperature, posterior_threshold, posterior_alpha, top_p=0.8, sampling = 'typical', fast = True, max_steps = 512):
+
+def medusa_forward(
+        input_ids: torch.Tensor,
+        model: MedusaModel,
+        tokenizer: transformers.AutoTokenizer,
+        medusa_choices: list[list],
+        temperature: float,
+        posterior_threshold: float,
+        posterior_alpha: float,
+        top_p: float = 0.8,
+        sampling: str = 'typical',
+        fast: bool = True,
+        max_steps: int = 512):
     assert input_ids.shape[0] == 1, "Only support batch size 1 for now!!"
     # Avoid modifying the input_ids in-place
+    # 深度拷贝一个input_ids，避免就地修改
     input_ids = input_ids.clone()
 
     # Cache medusa buffers (the fixed patterns for tree attention)
@@ -61,47 +74,48 @@ def medusa_forward(input_ids, model, tokenizer, medusa_choices, temperature, pos
     input_len = input_ids.shape[1]
     reset_medusa_mode(model)
     medusa_logits, logits = initialize_medusa(
-            input_ids, model, medusa_buffers["medusa_attn_mask"], past_key_values
+        input_ids, model, medusa_buffers["medusa_attn_mask"], past_key_values
     )
     new_token = 0
-    
-    for idx in range(max_steps): 
+
+    for idx in range(max_steps):
         candidates, tree_candidates = generate_candidates(
-                medusa_logits,
-                logits,
-                medusa_buffers["tree_indices"],
-                medusa_buffers["retrieve_indices"],
-                temperature, posterior_threshold, posterior_alpha, top_p, sampling, fast
-            )
+            medusa_logits,
+            logits,
+            medusa_buffers["tree_indices"],
+            medusa_buffers["retrieve_indices"],
+            temperature, posterior_threshold, posterior_alpha, top_p, sampling, fast
+        )
         medusa_logits, logits, outputs = tree_decoding(
-                model,
-                tree_candidates,
-                past_key_values,
-                medusa_buffers["medusa_position_ids"],
-                input_ids,
-                medusa_buffers["retrieve_indices"],
-            )
+            model,
+            tree_candidates,
+            past_key_values,
+            medusa_buffers["medusa_position_ids"],
+            input_ids,
+            medusa_buffers["retrieve_indices"],
+        )
         best_candidate, accept_length = evaluate_posterior(
-                logits, candidates, temperature, posterior_threshold, posterior_alpha , top_p, sampling, fast
-            )
+            logits, candidates, temperature, posterior_threshold, posterior_alpha, top_p, sampling, fast
+        )
         input_ids, logits, medusa_logits, new_token = update_inference_inputs(
-                input_ids,
-                candidates,
-                best_candidate,
-                accept_length,
-                medusa_buffers["retrieve_indices"],
-                outputs,
-                logits,
-                medusa_logits,
-                new_token,
-                past_key_values_data,
-                current_length_data,
-            )
+            input_ids,
+            candidates,
+            best_candidate,
+            accept_length,
+            medusa_buffers["retrieve_indices"],
+            outputs,
+            logits,
+            medusa_logits,
+            new_token,
+            past_key_values_data,
+            current_length_data,
+        )
         if tokenizer.eos_token_id in input_ids[0, input_len:].tolist():
             break
         if new_token > 1024:
             break
     return input_ids, new_token, idx
+
 
 def run_eval(
     model_path,
@@ -141,14 +155,15 @@ def run_eval(
     else:
         get_answers_func = get_model_answers
 
-    chunk_size = len(questions) // (num_gpus_total // num_gpus_per_model) # // 2
+    chunk_size = len(questions) // (num_gpus_total //
+                                    num_gpus_per_model)  # // 2
     ans_handles = []
     for i in range(0, len(questions), chunk_size):
         ans_handles.append(
             get_answers_func(
                 model_path,
                 model_id,
-                questions[i : i + chunk_size],
+                questions[i: i + chunk_size],
                 answer_file,
                 max_new_token,
                 num_choices,
@@ -186,9 +201,9 @@ def get_model_answers(
     fast,
     medusa_choices,
 ):
-    
+
     # Medusa model setup
-    
+
     num_heads = -1
     for choice in medusa_choices:
         if len(choice) > num_heads:
@@ -203,13 +218,13 @@ def get_model_answers(
     )
 
     tokenizer = model.get_tokenizer()
-    
+
     model.eval()
-    print('Check model training state:',model.training)
-    
+    print('Check model training state:', model.training)
+
     cuda_visible_devices = os.environ.get('CUDA_VISIBLE_DEVICES')
     print('CUDA VISIBLE DEVICES:', cuda_visible_devices)
-    
+
     question = questions[0]
 
     # warmup
@@ -246,11 +261,11 @@ def get_model_answers(
                     posterior_alpha,
                     top_p=top_p,
                     sampling=sampling,
-                    fast = fast,
+                    fast=fast,
                 )
                 torch.cuda.synchronize()
                 total_time = time.time() - start_time
-                output_ids = output_ids[0][len(input_ids[0]) :]
+                output_ids = output_ids[0][len(input_ids[0]):]
                 # be consistent with the template's stop_token_ids
                 if conv.stop_token_ids:
                     stop_token_ids_index = [
@@ -288,7 +303,6 @@ def get_model_answers(
             wall_time.append(total_time)
             conv.messages[-1][-1] = output
     print('Warmup done')
-
 
     for question in tqdm(questions):
         if question["category"] in temperature_config:
@@ -330,14 +344,14 @@ def get_model_answers(
                         posterior_alpha,
                         top_p=top_p,
                         sampling=sampling,
-                        fast = fast,
+                        fast=fast,
                     )
                     torch.cuda.synchronize()
                     total_time = time.time() - start_time
                     # if model.config.is_encoder_decoder:
                     #     output_ids = output_ids[0]
                     # else:
-                    output_ids = output_ids[0][len(input_ids[0]) :]
+                    output_ids = output_ids[0][len(input_ids[0]):]
 
                     # be consistent with the template's stop_token_ids
                     if conv.stop_token_ids:
@@ -375,7 +389,8 @@ def get_model_answers(
                 wall_time.append(total_time)
                 conv.messages[-1][-1] = output
             # torch.cuda.empty_cache()
-            choices.append({"index": i, "turns": turns, "idxs": idxs, "new_tokens": new_tokens, "wall_time": wall_time})
+            choices.append({"index": i, "turns": turns, "idxs": idxs,
+                           "new_tokens": new_tokens, "wall_time": wall_time})
 
         # Dump answers
         os.makedirs(os.path.dirname(answer_file), exist_ok=True)
@@ -427,7 +442,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--question-end", type=int, help="A debug option. The end index of questions."
     )
-    parser.add_argument("--answer-file", type=str, help="The output answer file.")
+    parser.add_argument("--answer-file", type=str,
+                        help="The output answer file.")
     parser.add_argument(
         "--max-new-token",
         type=int,
@@ -469,7 +485,7 @@ if __name__ == "__main__":
         default=0.09,
         help="The posterior threshold for medusa sampling.",
     )
-    
+
     parser.add_argument(
         "--posterior-alpha",
         type=float,
@@ -504,12 +520,10 @@ if __name__ == "__main__":
         help="The medusa choices for medusa sampling.",
     )
 
-    
-
-
     args = parser.parse_args()
 
-    args.model_id = args.model_id+"-temperature-"+str(args.temperature)+"-posterior_threshold-"+str(args.posterior_threshold)+"-posterior_alpha-"+str(args.posterior_alpha)+"-top_p-"+str(args.top_p)+"-sampling-"+args.sampling+"-fast-"+str(args.fast)
+    args.model_id = args.model_id+"-temperature-"+str(args.temperature)+"-posterior_threshold-"+str(args.posterior_threshold)+"-posterior_alpha-"+str(
+        args.posterior_alpha)+"-top_p-"+str(args.top_p)+"-sampling-"+args.sampling+"-fast-"+str(args.fast)
     args.medusa_choices = eval(args.medusa_choices)
     if args.num_gpus_total // args.num_gpus_per_model > 1:
         import ray

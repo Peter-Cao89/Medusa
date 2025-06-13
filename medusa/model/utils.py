@@ -29,9 +29,16 @@ def pad_path(path, length, pad_value=-2):
     # Append the padding values to the original path and return the new list.
     return path + [pad_value] * (length - len(path))
 
+
 def generate_medusa_buffers(medusa_choices, device="cuda"):
     """
-    Generate buffers for the Medusa structure based on the provided choices.
+    Generate buffers for the Medusa structure based on the provided choices.基于输入的medusa choices为medusa结构生成各种buffers，
+    包括medusa_attention_mask, medusa_tree_indices, medusa_position_ids, retrieve_indices.
+    其中
+    1. medusa_attention_mask用于控制解码时的可见范围
+    2. medusa_tree_indices映射树节点到候选logits
+    3. medusa_position_ids标识节点在树中的深度
+    4. retrieve_indices回溯路径，用于验证和决策
     
     Parameters:
     - medusa_choices (list): A nested list representing tree in the Medusa structure.
@@ -41,50 +48,69 @@ def generate_medusa_buffers(medusa_choices, device="cuda"):
     - dict: A dictionary containing buffers related to the Medusa structure.
     """
 
+    # 第一步：排序MEDUSA路径
     # Sort the medusa_choices based on their lengths and then their values
+    # 先按照路径长度(树深度)排序，然后再按路径值排序
     sorted_medusa_choices = sorted(medusa_choices, key=lambda x: (len(x), x))
+    # 计算总的节点数，+1是为了包含跟节点
     medusa_len = len(sorted_medusa_choices) + 1
 
+    # 第二步：统计各深度层级的节点数量
     # Initialize depth_counts to keep track of how many choices have a particular depth
-    depth_counts = []  # 表示每个深度对应的节点数
+    # depth_counts用于记录不同深度的节点数量， prev_depth为最大深度。用于后续构造注意力掩码与位置ID
+    depth_counts = []
     prev_depth = 0
     for path in sorted_medusa_choices:
         depth = len(path)
         if depth != prev_depth:
-            depth_counts.append(0)
+            depth_counts.append(0)  # 新深度层级
         depth_counts[depth - 1] += 1
         prev_depth = depth
-    
+
+    # 第三步：为MEDUSA创建attention掩码。设计原理为：1. 所有节点关注根节点(第0列全1)；2.节点关注自身(对角线为1)；3.节点关注其所有祖先节点(路径前缀)
     # Create the attention mask for Medusa
-    medusa_attn_mask = torch.eye(medusa_len, medusa_len) # 初始化一个大小为(medusa_len, medusa_len)的单位矩阵medusa_attn_mask
-    medusa_attn_mask[:, 0] = 1                           # 将第一列全部设置为1，表示根节点对所有节点
+    # 初始化一个medusa_len*medusa_len的单位阵,作为注意力掩码矩阵
+    medusa_attn_mask = torch.eye(medusa_len, medusa_len)
+    # 将第一列的所有值设置为1。所有节点关注根节点
+    medusa_attn_mask[:, 0] = 1
+    # 初始化遍历的起始值
     start = 0
-    for i in range(len(depth_counts)):
-        for j in range(depth_counts[i]):
+    for i in range(len(depth_counts)):  # 逐深度遍历
+        for j in range(depth_counts[i]):  # 遍历每个深度的值
+            # 从排序的medusa choice值中获取当前的medusa choice值
             cur_medusa_choice = sorted_medusa_choices[start + j]
             # retrieve ancestor position
             if len(cur_medusa_choice) == 1:
-                continue
+                continue  # 第一层节点无需额外处理
             ancestor_idx = []
+            # 获取每个深度不同节点的祖先节点在sorted_medusa_choices中的索引,并存储到ancestor_idx中
             for c in range(len(cur_medusa_choice) - 1):
-                ancestor_idx.append(sorted_medusa_choices.index(cur_medusa_choice[:c+1]) + 1)
-            medusa_attn_mask[j + start + 1, ancestor_idx] = 1
+                ancestor_idx.append(sorted_medusa_choices.index(
+                    cur_medusa_choice[:c+1]) + 1)
+            medusa_attn_mask[j + start + 1, ancestor_idx] = 1  # 将对应的节点的值改为1
         start += depth_counts[i]
 
+    # 为medusa结构构造树索引。节点索引 = 路径末token ID + TOPK * 深度 + 1。TOPK为全局变量，表示每层生成的候选token数量。
     # Generate tree indices for the Medusa structure
+    # 生成一个全零向量medusa_tree_indices，表示每个节点在树中代表的 token id
+    # 将树节点映射到候选logits矩阵中的位置
     medusa_tree_indices = torch.zeros(medusa_len, dtype=torch.long)
-    medusa_tree_indices[0] = 0
+    medusa_tree_indices[0] = 0  # 根节点索引=0
     start = 0
     for i in range(len(depth_counts)):
         for j in range(depth_counts[i]):
             cur_medusa_choice = sorted_medusa_choices[start + j]
-            medusa_tree_indices[start + j + 1] = cur_medusa_choice[-1] + TOPK * i + 1
+            # 计算当前节点在候选logits中的位置
+            medusa_tree_indices[start + j +
+                                1] = cur_medusa_choice[-1] + TOPK * i + 1
         start += depth_counts[i]
 
+    # 构造position ids(位置id)。用于区分不同深度的位置信息，根节点位置为0，第1层位置为1，第2层位置为2。
     # Generate position IDs for the Medusa structure
     medusa_position_ids = torch.zeros(medusa_len, dtype=torch.long)
     start = 0
     for i in range(len(depth_counts)):
+        # start+1为每个深度的起始索引，start+depth_counts[i]+1为每个深度结束索引
         medusa_position_ids[start + 1: start + depth_counts[i] + 1] = i + 1
         start += depth_counts[i]
 
@@ -92,20 +118,24 @@ def generate_medusa_buffers(medusa_choices, device="cuda"):
     retrieve_indices_nest = []
     retrieve_paths = []
     for i in range(len(sorted_medusa_choices)):
-        cur_medusa_choice = sorted_medusa_choices[-i-1]
+        cur_medusa_choice = sorted_medusa_choices[-i-1]  # 倒序处理,避免路径重复
         retrieve_indice = []
         if cur_medusa_choice in retrieve_paths:
             continue
         else:
             for c in range(len(cur_medusa_choice)):
-                retrieve_indice.append(sorted_medusa_choices.index(cur_medusa_choice[:c+1]))
+                retrieve_indice.append(
+                    sorted_medusa_choices.index(cur_medusa_choice[:c+1]))
                 retrieve_paths.append(cur_medusa_choice[:c+1])
         retrieve_indices_nest.append(retrieve_indice)
     max_length = max([len(x) for x in retrieve_indices_nest])
-    retrieve_indices = [pad_path(path, max_length) for path in retrieve_indices_nest]
+    retrieve_indices = [pad_path(path, max_length)
+                        for path in retrieve_indices_nest]
     retrieve_indices = torch.tensor(retrieve_indices, dtype=torch.long)
-    retrieve_indices = retrieve_indices + 1
-    retrieve_indices = torch.cat([torch.zeros((retrieve_indices.shape[0], 1), dtype=torch.long), retrieve_indices], dim=1)
+    retrieve_indices = retrieve_indices + 1  # 对所有值加1
+    # 第1列全部设置为0
+    retrieve_indices = torch.cat([torch.zeros(
+        (retrieve_indices.shape[0], 1), dtype=torch.long), retrieve_indices], dim=1)
 
     # Aggregate the generated buffers into a dictionary
     medusa_buffers = {
@@ -113,8 +143,8 @@ def generate_medusa_buffers(medusa_choices, device="cuda"):
         "tree_indices": medusa_tree_indices,
         "medusa_position_ids": medusa_position_ids,
         "retrieve_indices": retrieve_indices,
-        }
-    
+    }
+
     # Move the tensors in the dictionary to the specified device
     medusa_buffers = {
         k: v.clone().to(device)
@@ -192,6 +222,7 @@ def reset_past_key_values(passed_key_values):
         for j in range(2):
             passed_key_values[i][j].current_length.fill_(0)
     return passed_key_values
+
 
 def get_nucleus_one_token(logit, temperature, top_p):
     """
@@ -347,6 +378,7 @@ def tree_decoding(
     medusa_logits = tree_medusa_logits[:, 0, retrieve_indices]
     return medusa_logits, logits, outputs
 
+
 def get_nucleus_posterior_mask(logits, candidates, temperature, top_p):
     """
     Generates a posterior mask for token candidates using nucleus (top-p) sampling.
@@ -401,6 +433,7 @@ def get_nucleus_posterior_mask(logits, candidates, temperature, top_p):
 
     return posterior_mask
 
+
 def get_typical_posterior_mask(logits, candidates, temperature, posterior_threshold, posterior_alpha):
     """
     Args:
@@ -430,8 +463,7 @@ def get_typical_posterior_mask(logits, candidates, temperature, posterior_thresh
     sampled_tokens = sampled_tokens.view(n_samples, n_tokens)
     posterior_mask = (candidates[:, 1:] == sampled_tokens).int()
     return posterior_mask
-    
-    
+
 
 def evaluate_posterior(
     logits, candidates, temperature, posterior_threshold=0.3, posterior_alpha = 0.09, top_p=0.8, sampling = 'typical', fast = True
@@ -528,6 +560,7 @@ def evaluate_posterior(
         return best_candidate, accept_length
     else:
         raise NotImplementedError
+
 def update_inference_inputs(
     input_ids,
     candidates,
@@ -591,3 +624,9 @@ def update_inference_inputs(
     new_token += accept_length + 1
 
     return input_ids, logits, medusa_logits, new_token
+
+
+if __name__ == "__main__":
+    from medusa_choices import mc_sim_7b_63
+    breakpoint()
+    generate_medusa_buffers(medusa_choices=mc_sim_7b_63)
