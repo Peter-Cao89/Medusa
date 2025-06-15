@@ -20,14 +20,14 @@ import transformers
 
 
 from medusa.model.utils import *
-from medusa.model.medusa_model import MedusaModel
+from medusa.model.medusa_model import MedusaModel, MedusaModelABC
 from medusa.model.kv_cache import initialize_past_key_values
 from medusa.model.medusa_choices import *
 
 
 def medusa_forward(
         input_ids: torch.Tensor,
-        model: MedusaModel,
+        model: MedusaModelABC,
         tokenizer: transformers.AutoTokenizer,
         medusa_choices: list[list],
         temperature: float,

@@ -1,5 +1,7 @@
 import torch
 import torch.nn.functional as F
+from typing import List, Tuple
+from medusa_model import MedusaModelABC
 
 TOPK=10 # topk for sparse tree (10 is a placeholder and it is sufficient)
 
@@ -155,28 +157,40 @@ def generate_medusa_buffers(medusa_choices, device="cuda"):
     return medusa_buffers
 
 
-def initialize_medusa(input_ids, model, medusa_attn_mask, past_key_values):
+def initialize_medusa(
+        input_ids: torch.Tensor, 
+        model: 'MedusaModelABC',
+        medusa_attn_mask: torch.Tensor, 
+        past_key_values: List[torch.Tensor])->Tuple[torch.Tensor, torch.Tensor]:    
     """
-    Initializes the Medusa structure for a given model.
+    Initializes the Medusa structure for a given model.初始化给定模型的Medusa结构
 
     This function performs the following operations:
     1. Forward pass through the model to obtain the Medusa logits, original model outputs, and logits.
     2. Sets the Medusa attention mask within the base model.
 
     Args:
-    - input_ids (torch.Tensor): The input tensor containing token ids.
-    - model (MedusaLMHead): The model containing the Medusa layers and base model.
-    - medusa_attn_mask (torch.Tensor): The attention mask designed specifically for the Medusa structure.
-    - past_key_values (list of torch.Tensor): Contains past hidden states and past attention values.
+    - input_ids (torch.Tensor): The input tensor containing token ids. 包含输入token ids的张量
+    - model (MedusaLMHead): The model containing the Medusa layers and base model. 包含Medusa层与基础模型的MedusaLMHead的模型实例
+    - medusa_attn_mask (torch.Tensor): The attention mask designed specifically for the Medusa structure. 专门为medusa结构设计的attention mask
+    - past_key_values (list of torch.Tensor): Contains past hidden states and past attention values. 包含历史隐状态与历史attention值的张量
 
     Returns:
     - medusa_logits (torch.Tensor): Logits from the Medusa heads.
     - logits (torch.Tensor): Original logits from the base model.
     """
+    # 执行首次前向传播。
+    # medusa_logits: 来自 Medusa 头的预测（形状: [batch_size, num_heads, vocab_size]）
+    # outputs: 中间层输出
+    # logits: 基础模型的原始预测（形状: [batch_size, seq_len, vocab_size]）
     medusa_logits, outputs, logits = model(
-        input_ids, past_key_values=past_key_values, output_orig=True, medusa_forward=True
+        input_ids,
+        past_key_values=past_key_values,  # 提供历史key/value值
+        output_orig=True,   # 要求返回基础模型的原始输出
+        medusa_forward=True  # 激活medusa特定的前向传播
     )
-    model.base_model.model.medusa_mask = medusa_attn_mask
+    # 将medusa特定的注意力掩码注入基础模型
+    model.base_model.model.medusa_mask = medusa_attn_mask 
     return medusa_logits, logits
 
 
@@ -204,9 +218,9 @@ def reset_medusa_mode(
     model.base_model.model.medusa_mode = None
 
 
-def reset_past_key_values(passed_key_values):
+def reset_past_key_values(passed_key_values: List[torch.Tensor]):
     """
-    Resets the current lengths in the passed key-values to zero.
+    Resets the current lengths in the passed key-values to zero. 将历史key-values的当前长度重置为0
 
     This function is designed to be used during the evaluation of a baseline model.
     It iterates through each layer's key-values and sets their current lengths to zero,
@@ -224,34 +238,45 @@ def reset_past_key_values(passed_key_values):
     return passed_key_values
 
 
-def get_nucleus_one_token(logit, temperature, top_p):
+def get_nucleus_one_token(
+        logit: torch.Tensor,
+        temperature: float,
+        top_p: float):
     """
-    Performs token sampling based on the nucleus (top-p) sampling method.
+    Performs token sampling based on the nucleus (top-p) sampling method. 基于原子采样方法执行token采样
 
     This function selects a token from a given logit distribution using the nucleus sampling strategy.
     It allows for more controlled and diverse generation compared to traditional top-k sampling.
+    该函数使用原子采样策略从一个给定的logits分布选择一个token。该方法相比传统的top-k采样有更加可控的多样性的生产。
 
     Args:
-        logit (torch.Tensor): The logits from a language model output, expected to be a 2D tensor (BxC).
-        temperature (float): A temperature parameter to control the randomness in sampling.
-                             Higher values increase diversity, lower values make selections more deterministic.
+        logit (torch.Tensor): The logits from a language model output, expected to be a 2D tensor (BxC). B 是 batch size，C 是词表大小
+        temperature (float): A temperature parameter to control the randomness in sampling. 
+                             Higher values increase diversity, lower values make selections more deterministic.控制采样的“随机性”：越大越随机，越小越确定
         top_p (float): The cumulative probability threshold for nucleus sampling.
                        It controls the size of the set of high-probability tokens to consider for sampling.
 
     Returns:
         torch.Tensor: A tensor containing the indices of the sampled tokens.
     """
+    # 如果 top_p >= 1，直接使用 softmax + multinomial 采样
     if top_p >= 1:
         return torch.multinomial(F.softmax(logit / temperature, dim=-1), 1)
+    # 温度缩放
     logit = logit / temperature
-    probs = torch.softmax(logit, dim=-1)
-    sorted_logits, sorted_indices = torch.sort(probs, descending=True)
-    cum_probs = torch.cumsum(sorted_logits, dim=-1)
+    probs = torch.softmax(logit, dim=-1) # 计算概率分布。形状保持 [batch_size, vocab_size]
+    sorted_logits, sorted_indices = torch.sort(probs, descending=True)# 对softmax处理后的概率进行排序
+    cum_probs = torch.cumsum(sorted_logits, dim=-1)#计算累加概率分布
+    # sorted_indices_to_remove为一个bool掩码，标记哪些 token 的累计概率超过了 top_p
     sorted_indices_to_remove = cum_probs > top_p
-    sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
-    sorted_indices_to_remove[..., 0] = 0
+    # 这里将第一个 token 强制保留（即使它本身就已经超过 top_p），防止没有 token 可选
+    sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone() # 右移掩码
+    sorted_indices_to_remove[..., 0] = 0  # 第一列全部设置为False
+    # 使用 scatter 把排序后的 mask 映射回原始 logit 的维度
     indices_to_remove = sorted_indices_to_remove.scatter(dim=1, index=sorted_indices, src=sorted_indices_to_remove)
+    # 把需要排除的 token 设为 -inf，这样 softmax 后概率会变成 0
     logit[indices_to_remove] = float('-inf')
+    # 再次 softmax 得到新的概率分布（仅包含有效 token）；使用 multinomial 采样一个 token 返回
     sampled_tokens = torch.multinomial(F.softmax(logit, dim=-1), 1)
     return sampled_tokens
 
