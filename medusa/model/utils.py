@@ -1,6 +1,6 @@
 import torch
 import torch.nn.functional as F
-from typing import List, Tuple
+from typing import List, Tuple, Union
 from medusa_model import MedusaModelABC
 
 TOPK=10 # topk for sparse tree (10 is a placeholder and it is sufficient)
@@ -280,15 +280,21 @@ def get_nucleus_one_token(
     sampled_tokens = torch.multinomial(F.softmax(logit, dim=-1), 1)
     return sampled_tokens
 
-def get_typical_one_token(logit, temperature, posterior_threshold, posterior_alpha):
+
+def get_typical_one_token(
+        logit: torch.Tensor,
+        temperature: float,
+        posterior_threshold: float,
+        posterior_alpha: float):
     """
-    Implements token sampling based on the typical sampling method.
+    Implements token sampling based on the typical sampling method. 基于典型采样方法实现token的采样方法。
 
     This function selects a token from a given logit distribution using the typical sampling strategy,
     aiming to balance between diversity and likelihood in a more nuanced way compared to traditional methods.
+    该方法使用typical sampling策略从一个给定的logits分布选择一个token。
 
     Args:
-        logit (torch.Tensor): The logits from a language model output, expected to be a 2D tensor.
+        logit (torch.Tensor): The logits from a language model output, expected to be a 2D tensor.(形状: [batch_size, vocab_size]
         temperature (float): A parameter to control the randomness in sampling.
                               Higher values increase diversity, lower values make selections more deterministic.
         posterior_threshold (float): A threshold to decide the lower bound of probabilities to be considered for sampling.
@@ -297,21 +303,40 @@ def get_typical_one_token(logit, temperature, posterior_threshold, posterior_alp
     Returns:
         torch.Tensor: A tensor containing the indices of the sampled tokens.
     """
+    # 通过温度参数调整 logits 分布。temperature = 0：退化为贪婪搜索；temperature < 1：锐化分布，增加确定性；temperature > 1：平滑分布，增加多样性。
     logit = logit / temperature
+    # 将调整后的 logits 转换为概率分布。形状保持 [batch_size, vocab_size]
     probs = torch.softmax(logit, dim=-1)
+    # 计算熵。H(p) = -\sum_{i} p_i \log p_i；1e-5：防止 log(0) 的数值稳定项
     entropy = -torch.sum(
-            probs * torch.log(probs + 1e-5), dim=-1
-        )
+        probs * torch.log(probs + 1e-5), dim=-1
+    )
+    # 构建了一个动态的概率下限，用来过滤掉不典型的 token。
     threshold = torch.minimum(
-            torch.ones_like(entropy) * posterior_threshold,
-            torch.exp(-entropy) * posterior_alpha,
-        )
+        # 固定阈值：posterior_threshold（用户设定的常量）
+        torch.ones_like(entropy) * posterior_threshold,
+        # 自适应阈值：$\exp(-H(p)) \times \alpha$
+        torch.exp(-entropy) * posterior_alpha,
+    )
+    # 找出所有概率小于阈值的 token；
     indices_to_remove = probs < threshold.unsqueeze(-1)
     logit[indices_to_remove] = float('-inf')
+    # 对筛选后的概率分布进行多项式采样
     sampled_tokens = torch.multinomial(F.softmax(logit, dim=-1), 1)
     return sampled_tokens
 
-def generate_candidates(medusa_logits, logits, tree_indices, retrieve_indices, temperature = 0, posterior_threshold=0.3, posterior_alpha = 0.09, top_p=0.8, sampling = 'typical', fast = False):
+
+def generate_candidates(
+        medusa_logits: torch.Tensor,
+        logits: torch.Tensor,
+        tree_indices: Union[torch.Tensor, List[torch.Tensor]],
+        retrieve_indices: Union[torch.Tensor, List[torch.Tensor]],
+        temperature: float = 0,
+        posterior_threshold: float = 0.3,
+        posterior_alpha: float = 0.09,
+        top_p: float = 0.8,
+        sampling: str = 'typical',
+        fast: bool = False):
     """
     Generate candidates based on provided logits and indices.
     
