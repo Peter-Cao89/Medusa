@@ -59,12 +59,16 @@ def _make_causal_mask(
     Make causal mask used for bi-directional self-attention.
     """
     bsz, tgt_len = input_ids_shape
+    # 以最小值填充，生成一个tgt_len * tgt_len的张量
     mask = torch.full((tgt_len, tgt_len), torch.finfo(dtype).min, device=device)
     mask_cond = torch.arange(mask.size(-1), device=device)
-    mask.masked_fill_(mask_cond < (mask_cond + 1).view(mask.size(-1), 1), 0)
+    mask.masked_fill_(
+        mask_cond < (mask_cond + 1).view(mask.size(-1), 1), # 生成一个BoolTensor的mask
+        0)
     mask = mask.to(dtype)
 
     if past_key_values_length > 0:
+        # 如果有历史key/value，将历史key/value mask与当前mask在列方向进行拼接
         mask = torch.cat([torch.zeros(tgt_len, past_key_values_length, dtype=dtype, device=device), mask], dim=-1)
     return mask[None, None, :, :].expand(bsz, 1, tgt_len, tgt_len + past_key_values_length)
 
@@ -851,8 +855,10 @@ class LlamaModel(LlamaPreTrainedModel):
         if input_ids is not None and inputs_embeds is not None:
             raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
         elif input_ids is not None:
+            # input_ids的shape为[batch size, sequence length]
             batch_size, seq_length = input_ids.shape
         elif inputs_embeds is not None:
+            # input embedding的shape为[batch size, sequence length, vocab size]
             batch_size, seq_length, _ = inputs_embeds.shape
         else:
             raise ValueError("You have to specify either input_ids or inputs_embeds")
@@ -860,6 +866,7 @@ class LlamaModel(LlamaPreTrainedModel):
         seq_length_with_past = seq_length
         past_key_values_length = 0
 
+        # 如果含有kv cache，重新计算sequene length
         if past_key_values is not None:
             past_key_values_length = past_key_values[0][0].shape[2]
             seq_length_with_past = seq_length_with_past + past_key_values_length
@@ -873,6 +880,7 @@ class LlamaModel(LlamaPreTrainedModel):
         else:
             position_ids = position_ids.view(-1, seq_length).long()
 
+        # 如果inputs_embeds为空，则使用Embedding生成inputs_embeds
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
         # embed positions

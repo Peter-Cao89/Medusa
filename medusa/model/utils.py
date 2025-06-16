@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
-from typing import List, Tuple, Union
-from medusa_model import MedusaModelABC
+from typing import List, Tuple, Union, Dict
+from medusa_model import MedusaModelABC, MedusaModelLlama, MedusaModelMistral
 
 TOPK=10 # topk for sparse tree (10 is a placeholder and it is sufficient)
 
@@ -32,7 +32,7 @@ def pad_path(path, length, pad_value=-2):
     return path + [pad_value] * (length - len(path))
 
 
-def generate_medusa_buffers(medusa_choices, device="cuda"):
+def generate_medusa_buffers(medusa_choices: list[list], device="cuda") -> Dict[str, torch.Tensor]:
     """
     Generate buffers for the Medusa structure based on the provided choices.基于输入的medusa choices为medusa结构生成各种buffers，
     包括medusa_attention_mask, medusa_tree_indices, medusa_position_ids, retrieve_indices.
@@ -159,11 +159,12 @@ def generate_medusa_buffers(medusa_choices, device="cuda"):
 
 def initialize_medusa(
         input_ids: torch.Tensor, 
-        model: 'MedusaModelABC',
+        model: Union[MedusaModelLlama, MedusaModelMistral],
         medusa_attn_mask: torch.Tensor, 
         past_key_values: List[torch.Tensor])->Tuple[torch.Tensor, torch.Tensor]:    
     """
-    Initializes the Medusa structure for a given model.初始化给定模型的Medusa结构
+    Initializes the Medusa structure for a given model.
+    初始化给定模型的Medusa结构
 
     This function performs the following operations:
     1. Forward pass through the model to obtain the Medusa logits, original model outputs, and logits.
@@ -180,7 +181,7 @@ def initialize_medusa(
     - logits (torch.Tensor): Original logits from the base model.
     """
     # 执行首次前向传播。
-    # medusa_logits: 来自 Medusa 头的预测（形状: [batch_size, num_heads, vocab_size]）
+    # medusa_logits: 来自 Medusa 头的预测(形状: [batch_size, num_heads, vocab_size])
     # outputs: 中间层输出
     # logits: 基础模型的原始预测（形状: [batch_size, seq_len, vocab_size]）
     medusa_logits, outputs, logits = model(
@@ -195,17 +196,18 @@ def initialize_medusa(
 
 
 def reset_medusa_mode(
-    model,
+    model: Union[MedusaModelLlama, MedusaModelMistral],
 ):
     """
     Resets the Medusa settings and the past key-values to their initial state.
+    将medusa的设置与它们的历史keys-values重置为其初始状态
 
     This function ensures that after any operations involving Medusa,
     the base model and its settings return to their default state.
     Specifically, it performs the following tasks:
-    1. Clears the Medusa attention mask in the base model.
-    2. Resets the Medusa mode in the base model.
-    3. Resets the current lengths in the past key-values to zero for all layers.
+    1. Clears the Medusa attention mask in the base model. 清空基础模型的medusa注意力掩码。
+    2. Resets the Medusa mode in the base model. 重置基础模型的medusa模式
+    3. Resets the current lengths in the past key-values to zero for all layers. 将所有层的历史key-values的当前长度cur_length参数重置为0
 
     Args:
     - model (MedusaLMHead): The model containing the Medusa layers and base model.
@@ -327,18 +329,19 @@ def get_typical_one_token(
 
 
 def generate_candidates(
-        medusa_logits: torch.Tensor,
-        logits: torch.Tensor,
-        tree_indices: Union[torch.Tensor, List[torch.Tensor]],
-        retrieve_indices: Union[torch.Tensor, List[torch.Tensor]],
-        temperature: float = 0,
-        posterior_threshold: float = 0.3,
-        posterior_alpha: float = 0.09,
-        top_p: float = 0.8,
-        sampling: str = 'typical',
-        fast: bool = False):
+        medusa_logits: torch.Tensor,       # Medusa head输出的 logits [batch_size, num_heads, vocab_size]
+        logits: torch.Tensor,              # 主模型输出的 logits (batch_size, seq_len, vocab_size)
+        tree_indices: Union[torch.Tensor, List[torch.Tensor]],      # 树结构的索引列表，用于映射候选token到树状位置
+        retrieve_indices: Union[torch.Tensor, List[torch.Tensor]],  # 用于提取笛卡尔候选的索引
+        temperature: float = 0,            # 控制采样随机性的温度参数
+        posterior_threshold: float = 0.3,  # 典型采样的概率阈值
+        posterior_alpha: float = 0.09,     # 典型采样的熵缩放因子
+        top_p: float = 0.8,                # nucleus sampling 的累积概率阈值
+        sampling: str = 'typical',         # 采样方法 ('typical' 或 'nucleus')
+        fast: bool = False):               # 是否启用快速确定性解码
     """
     Generate candidates based on provided logits and indices.
+    基于提供的logits与索引，生产候选tokens
     
     Parameters:
     - medusa_logits (torch.Tensor): Logits from a specialized Medusa structure, aiding in candidate selection.
@@ -357,46 +360,60 @@ def generate_candidates(
         1. Cartesian candidates derived from the combined original and Medusa logits.
         2. Tree candidates mapped from the Cartesian candidates using tree indices.
     """
+    # 对LM head的输出进行采样。如果 temperature == 0 或者启用了 fast 模式，则使用 贪心解码（greedy decoding），直接选概率最高的 token。
+    # 输出形状为 (1,)，表示一个 token。
     # Greedy decoding: Select the most probable candidate from the original logits.
     if temperature == 0 or fast:
         candidates_logit = torch.argmax(logits[:, -1]).unsqueeze(0)
     else:
-        if sampling == 'typical':
+        # 根据指定的采样方式（典型采样或 nucleus 采样）进行随机采样。
+        if sampling == 'typical':  # typical sampling
             candidates_logit = get_typical_one_token(logits[:, -1], temperature, posterior_threshold, posterior_alpha).squeeze(0)
-        elif sampling == 'nucleus':
+        elif sampling == 'nucleus':  # nucleus sampling
             candidates_logit = get_nucleus_one_token(logits[:, -1], temperature, top_p).squeeze(0)
         else:
             raise NotImplementedError
     # Extract the TOPK candidates from the medusa logits.
+    # 对medusa logits在最后一个时间步（-1）、第一个 head（0）的结果执行TOPK采样，得到candidates的索引
     candidates_medusa_logits = torch.topk(medusa_logits[:, 0, -1], TOPK, dim = -1).indices
 
     # Combine the selected candidate from the original logits with the topk medusa logits.
+    # 将主模型logits中采样的候选logits(candidates_logit)与top-k的medusa候选logits进行拼接(candidates_medusa_logits)
+    # 输出形状：(1 + TOPK,)
     candidates = torch.cat([candidates_logit, candidates_medusa_logits.view(-1)], dim=-1)
 
     # Map the combined candidates to the tree indices to get tree candidates.
+    # 从candidates中拿到树对应的节点
     tree_candidates = candidates[tree_indices]
 
     # Extend the tree candidates by appending a zero.
+    # 
     tree_candidates_ext = torch.cat([tree_candidates, torch.zeros((1), dtype=torch.long, device=tree_candidates.device)], dim=0)
 
     # Retrieve the cartesian candidates using the retrieve indices.
+    # 使用 retrieve_indices 提取笛卡尔形式的候选 token
     cart_candidates = tree_candidates_ext[retrieve_indices]
 
     # Unsqueeze the tree candidates for dimension consistency.
     tree_candidates = tree_candidates.unsqueeze(0)
+    # 笛卡尔形式的候选 token，形状 (N,)
+    # 树结构形式的候选 token，形状 (1, M)
     return cart_candidates, tree_candidates
 
 
 def tree_decoding(
-    model,
-    tree_candidates,
-    past_key_values,
-    medusa_position_ids,
-    input_ids,
-    retrieve_indices,
+    model,                  # 使用的语言模型（通常是一个 nn.Module）
+    tree_candidates,        # 树状结构的候选 token 序列(形状如: [1, M])
+    past_key_values,        # 注意力机制的KV缓存，用于避免重复计算历史token
+    medusa_position_ids,    # Medusa buffer中对应的 position IDs
+    input_ids,              # 当前已有的输入序列 token IDs
+    retrieve_indices,       # 用于从 logits 中提取特定位置的索引
 ):
     """
     Decode the tree candidates using the provided model and reorganize the logits.
+    该函数的主要功能为:
+    1. 使用语言模型对一组“树结构”的候选token进行前向计算
+    2. 
     
     Parameters:
     - model (nn.Module): Model to be used for decoding the tree candidates.
@@ -410,6 +427,10 @@ def tree_decoding(
     - tuple: Returns medusa logits, regular logits, and other outputs from the model.
     """
 
+    # input_ids.shape[1] 是当前输入序列的长度；
+    # medusa_position_ids 是 Medusa 模型生成的位置 ID（通常是相对于当前输入的一个偏移量）；
+    # 相加后得到的是这些候选 token 在整个上下文中的实际位置；
+    # 示例：如果当前已有 10 个 token，Medusa 生成的位置 ID 是 [0, 1, 2]，那么加上 10 就变成了 [10, 11, 12]。
     # Compute new position IDs by adding the Medusa position IDs to the length of the input sequence.
     position_ids = medusa_position_ids + input_ids.shape[1]
 
@@ -451,7 +472,7 @@ def get_nucleus_posterior_mask(logits, candidates, temperature, top_p):
     # Apply temperature
     logits = logits[:, :-1] / temperature
     n_samples, n_tokens = logits.shape[0], logits.shape[1]
-    logits = logits.view(n_samples*n_tokens, -1)
+    logits = logits.view(n_samples * n_tokens, -1)
     if top_p >= 1:
         sampled_tokens = torch.multinomial(F.softmax(logits, dim=-1), 1)
         sampled_tokens = sampled_tokens.view(n_samples, n_tokens)
@@ -678,5 +699,5 @@ def update_inference_inputs(
 
 if __name__ == "__main__":
     from medusa_choices import mc_sim_7b_63
-    breakpoint()
+    # breakpoint()
     generate_medusa_buffers(medusa_choices=mc_sim_7b_63)

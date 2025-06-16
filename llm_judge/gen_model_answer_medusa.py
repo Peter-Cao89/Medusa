@@ -20,14 +20,14 @@ import transformers
 
 
 from medusa.model.utils import *
-from medusa.model.medusa_model import MedusaModel, MedusaModelABC
+from medusa.model.medusa_model import MedusaModel, MedusaModelLlama, MedusaModelMistral
 from medusa.model.kv_cache import initialize_past_key_values
 from medusa.model.medusa_choices import *
 
 
 def medusa_forward(
         input_ids: torch.Tensor,
-        model: MedusaModelABC,
+        model: Union[MedusaModelLlama, MedusaModelMistral],
         tokenizer: transformers.AutoTokenizer,
         medusa_choices: list[list],
         temperature: float,
@@ -51,6 +51,7 @@ def medusa_forward(
         medusa_buffers = generate_medusa_buffers(
             medusa_choices, device=model.base_model.device
         )
+    # 为MEDUSA模型重新赋值medusa buffers与medusa choices
     model.medusa_buffers = medusa_buffers
     model.medusa_choices = medusa_choices
 
@@ -71,7 +72,9 @@ def medusa_forward(
         model.past_key_values_data = past_key_values_data
         model.current_length_data = current_length_data
 
+    # 获取输入sequence的长度
     input_len = input_ids.shape[1]
+    # 重置medusa的模式
     reset_medusa_mode(model)
     medusa_logits, logits = initialize_medusa(
         input_ids, model, medusa_buffers["medusa_attn_mask"], past_key_values

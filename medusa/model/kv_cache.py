@@ -1,5 +1,9 @@
 import torch
-
+from transformers.models.llama import LlamaConfig
+from transformers.models.mixtral import MixtralConfig
+from transformers.models.qwen2 import Qwen2Config
+from typing import Union
+from medusa_model import MedusaModelLlama, MedusaModelMistral, MedusaConfig
 
 class KVCache:
     """
@@ -75,7 +79,7 @@ class KVCache:
         return torch.narrow(self.data, 2, 0, self.current_length)
 
 
-def initialize_past_key_values(model):
+def initialize_past_key_values(model: Union[MedusaModelLlama, MedusaModelMistral]):
     """
     Initialize past key and value states for a given transformer model.
 
@@ -91,8 +95,8 @@ def initialize_past_key_values(model):
             - past_key_values_data (torch.Tensor): The tensor that will store all keys and values.
             - current_length_data (torch.Tensor): A tensor tracking the current length of keys/values in the cache.
     """
-    # Extracting configuration from the model
-    config = model.config
+    # Extracting configuration from the model 读取模型配置
+    config: Union[Qwen2Config, LlamaConfig, MixtralConfig] = model.config
     # Initializing the batch size to 1, this can be modified if different batch sizes are required
     # 将batch size初始化为1,可以针对不同的batch size进行修改。
     batch_size = 1

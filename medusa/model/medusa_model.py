@@ -118,9 +118,11 @@ class MedusaModelABC(nn.Module):
             ]
         )
     # Add a link named base_model to self
+
     @property
     def base_model(self):
         return self
+
     @classmethod
     def from_pretrained(
         cls,
@@ -191,7 +193,9 @@ class MedusaModelABC(nn.Module):
             torch.Tensor: A tensor containing predictions from all Medusa heads.
             (Optional) Original predictions from the base model's LM head.
         """
+        # 不执行medusa前向传递
         if not medusa_forward:
+            # 根据MRO顺序确定super().forward调用的为哪个forward。目前应该是调用LlamaForCausalLM中model
             return super().forward(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
@@ -199,8 +203,12 @@ class MedusaModelABC(nn.Module):
                 position_ids=position_ids,
                 **kwargs,
             )
+        # 执行medusa前向传递
+        # 开启推理模式
         with torch.inference_mode():
             # Pass input through the base model
+            # 此处self.base_model.model等效于self.model，会根据MRO顺序查询model的实现。
+            # MedusaModelABC没有定义model的实例，则调用LlamaForCausalLM中的model的实例
             outputs = self.base_model.model(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
@@ -219,6 +227,7 @@ class MedusaModelABC(nn.Module):
         if output_orig:
             return torch.stack(medusa_logits, dim=0), outputs, orig
         return torch.stack(medusa_logits, dim=0)
+
     def get_medusa_choice(self, model_name):
         if 'vicuna' in model_name:
             if '7b' in model_name:
@@ -266,6 +275,7 @@ class MedusaModelABC(nn.Module):
         """
         assert input_ids.shape[0] == 1, "Only support batch size 1 for now!!"
         # Avoid modifying the input_ids in-place
+        # 深度拷贝一个input_ids，避免就地修改
         input_ids = input_ids.clone()
 
         # Cache medusa buffers (the fixed patterns for tree attention)
@@ -280,6 +290,7 @@ class MedusaModelABC(nn.Module):
             medusa_buffers = generate_medusa_buffers(
                 medusa_choices, device=self.base_model.device
             )
+        # 为MEDUSA模型重新赋值medusa buffers与medusa choices
         self.medusa_buffers = medusa_buffers
         self.medusa_choices = medusa_choices
 
@@ -300,8 +311,9 @@ class MedusaModelABC(nn.Module):
             self.past_key_values_data = past_key_values_data
             self.current_length_data = current_length_data
 
+        # 获取输入sequence的长度
         input_len = input_ids.shape[1]
-
+        # 重置medusa的模式
         reset_medusa_mode(self)
         # Initialize tree attention mask and process prefill tokens
         medusa_logits, logits = initialize_medusa(
@@ -309,10 +321,11 @@ class MedusaModelABC(nn.Module):
         )
 
         new_token = 0
-        last_round_token = 0
+        # last_round_token = 0
 
         for idx in range(max_steps):
             # Generate candidates with topk predictions from Medusa heads
+            # 用Medusa预测头得到的topK预测生成候选路径。candidates是多个候选 Token 序列。tree_candidates是Token 树
             candidates, tree_candidates = generate_candidates(
                 medusa_logits,
                 logits,
@@ -383,7 +396,7 @@ class MedusaModel():
         pretrained_model_name_or_path,
         *args,
         **kwargs,
-    ):
+    ) -> Union[MedusaModelLlama, MedusaModelMistral]:
         # Manually load config to ensure that the medusa_num_heads parameter is loaded
         try:
             config = AutoConfig.from_pretrained(pretrained_model_name_or_path)
