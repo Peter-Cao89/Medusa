@@ -855,10 +855,10 @@ class LlamaModel(LlamaPreTrainedModel):
         if input_ids is not None and inputs_embeds is not None:
             raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
         elif input_ids is not None:
-            # input_ids的shape为[batch size, sequence length]
+            # input_ids的shape为[batch_size, seq_len]
             batch_size, seq_length = input_ids.shape
         elif inputs_embeds is not None:
-            # input embedding的shape为[batch size, sequence length, vocab size]
+            # input embedding的shape为[batch_size, seq_len, emebdding_dim]
             batch_size, seq_length, _ = inputs_embeds.shape
         else:
             raise ValueError("You have to specify either input_ids or inputs_embeds")
@@ -882,6 +882,7 @@ class LlamaModel(LlamaPreTrainedModel):
 
         # 如果inputs_embeds为空，则使用Embedding生成inputs_embeds
         if inputs_embeds is None:
+            # inputs_embeds的shape为[batch_size, seq_len, hidden_size]
             inputs_embeds = self.embed_tokens(input_ids)
         # embed positions
         if attention_mask is None:
@@ -963,7 +964,7 @@ class LlamaModel(LlamaPreTrainedModel):
         if not return_dict:
             return tuple(v for v in [hidden_states, next_cache, all_hidden_states, all_self_attns] if v is not None)
         return BaseModelOutputWithPast(
-            last_hidden_state=hidden_states,
+            last_hidden_state=hidden_states,# [batch_size, seq_len, hidden_size]
             past_key_values=next_cache,
             hidden_states=all_hidden_states,
             attentions=all_self_attns,
@@ -1004,8 +1005,8 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
     @replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
     def forward(
         self,
-        input_ids: torch.LongTensor = None,
-        attention_mask: Optional[torch.Tensor] = None,
+        input_ids: torch.LongTensor = None, # [batch_size, seq_len]
+        attention_mask: Optional[torch.Tensor] = None, # [batch_size, seq_len]
         position_ids: Optional[torch.LongTensor] = None,
         past_key_values=None,  # [MODIFIED] past_key_value is KVCache class
         inputs_embeds: Optional[torch.FloatTensor] = None,
@@ -1060,7 +1061,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
             return_dict=return_dict,
         )
 
-        hidden_states = outputs[0]
+        hidden_states = outputs[0]  # shape [batch_size, seq_len, hidden_size]
         if self.config.pretraining_tp > 1:
             lm_head_slices = self.lm_head.weight.split(self.vocab_size // self.config.pretraining_tp, dim=0)
             logits = [F.linear(hidden_states, lm_head_slices[i]) for i in range(self.config.pretraining_tp)]

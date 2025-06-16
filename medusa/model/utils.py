@@ -402,12 +402,12 @@ def generate_candidates(
 
 
 def tree_decoding(
-    model,                  # 使用的语言模型（通常是一个 nn.Module）
-    tree_candidates,        # 树状结构的候选 token 序列(形状如: [1, M])
-    past_key_values,        # 注意力机制的KV缓存，用于避免重复计算历史token
-    medusa_position_ids,    # Medusa buffer中对应的 position IDs
-    input_ids,              # 当前已有的输入序列 token IDs
-    retrieve_indices,       # 用于从 logits 中提取特定位置的索引
+    model: Union[MedusaModelLlama, MedusaModelMistral],   # 使用的语言模型（通常是一个 nn.Module）
+    tree_candidates: torch.Tensor,        # 树状结构的候选 token 序列(形状如: [1, M])
+    past_key_values: torch.Tensor,        # 注意力机制的KV缓存，用于避免重复计算历史token
+    medusa_position_ids: torch.Tensor,    # Medusa buffer中对应的 position IDs
+    input_ids: torch.Tensor,              # 当前已有的输入序列 token IDs
+    retrieve_indices: torch.Tensor,       # 用于从 logits 中提取特定位置的索引
 ):
     """
     Decode the tree candidates using the provided model and reorganize the logits.
@@ -437,11 +437,11 @@ def tree_decoding(
     # Use the model to decode the tree candidates. 
     # The model is expected to return logits for the Medusa structure, original logits, and possibly other outputs.
     tree_medusa_logits, outputs, tree_logits = model(
-        tree_candidates,
-        output_orig=True,
-        past_key_values=past_key_values,
-        position_ids=position_ids,
-        medusa_forward=True,
+        tree_candidates,  # 表示要输出原始模型的 logits；
+        output_orig=True,  # 表示要输出原始模型的 logits；
+        past_key_values=past_key_values,  # 提供缓存的状态（key/value pairs）以加速推理；
+        position_ids=position_ids,  # 提供缓存的状态（key/value pairs）以加速推理；
+        medusa_forward=True,  # 表示这是 Medusa 解码模式；
     )
     
     # Reorder the obtained logits based on the retrieve_indices to ensure consistency with some reference ordering.

@@ -212,7 +212,7 @@ def get_model_answers(
         if len(choice) > num_heads:
             num_heads = len(choice)
 
-    model = MedusaModel.from_pretrained(
+    model: Union[MedusaModelLlama, MedusaModelMistral] = MedusaModel.from_pretrained(
         model_path,
         # medusa_num_heads = num_heads,
         torch_dtype=torch.float16,
