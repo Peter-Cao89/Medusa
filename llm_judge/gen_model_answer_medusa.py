@@ -20,14 +20,14 @@ import transformers
 
 
 from medusa.model.utils import *
-from medusa.model.medusa_model import MedusaModel, MedusaModelLlama, MedusaModelMistral
+from medusa.model.medusa_model import MedusaModel, MedusaModelLlama, MedusaModelMistral, MedusaModelQwen2
 from medusa.model.kv_cache import initialize_past_key_values
 from medusa.model.medusa_choices import *
 
 
 def medusa_forward(
         input_ids: torch.Tensor,
-        model: Union[MedusaModelLlama, MedusaModelMistral],
+        model: Union[MedusaModelLlama, MedusaModelMistral, MedusaModelQwen2],
         tokenizer: transformers.AutoTokenizer,
         medusa_choices: list[list],
         temperature: float,

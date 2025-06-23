@@ -3,7 +3,7 @@ from transformers.models.llama import LlamaConfig
 from transformers.models.mixtral import MixtralConfig
 from transformers.models.qwen2 import Qwen2Config
 from typing import Union
-from medusa_model import MedusaModelLlama, MedusaModelMistral, MedusaConfig
+# from .medusa_model import MedusaModelLlama, MedusaModelMistral, MedusaConfig
 
 class KVCache:
     """
@@ -79,7 +79,7 @@ class KVCache:
         return torch.narrow(self.data, 2, 0, self.current_length)
 
 
-def initialize_past_key_values(model: Union[MedusaModelLlama, MedusaModelMistral]):
+def initialize_past_key_values(model):
     """
     Initialize past key and value states for a given transformer model.
 

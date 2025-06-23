@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from .modeling_llama_kv import LlamaForCausalLM as KVLlamaForCausalLM
 from .modeling_mistral_kv import MistralForCausalLM as KVMistralForCausalLM
+from .modeling_qwen2_kv import Qwen2ForCausalLM as KVQwenForCausalLM
 # import transformers
 
 # # monkey patch
@@ -141,6 +142,8 @@ class MedusaModelABC(nn.Module):
             )
         except:
             config = MedusaConfig.from_pretrained(pretrained_model_name_or_path)
+            if config.base_model_name_or_path != pretrained_model_name_or_path:
+                config.base_model_name_or_path = pretrained_model_name_or_path
             base_model_config = AutoConfig.from_pretrained(config.base_model_name_or_path)
             base_model_config.medusa_num_heads = 5 # TODO: fix the uploaded config (only include 2 heads)
             base_model_config.medusa_num_layers = config.medusa_num_layers
@@ -388,6 +391,9 @@ class MedusaModelLlama(MedusaModelABC, KVLlamaForCausalLM):
 class MedusaModelMistral(MedusaModelABC, KVMistralForCausalLM):
     pass
 
+class MedusaModelQwen2(MedusaModelABC, KVQwenForCausalLM):
+    pass
+
 
 class MedusaModel():
     @classmethod
@@ -396,7 +402,7 @@ class MedusaModel():
         pretrained_model_name_or_path,
         *args,
         **kwargs,
-    ) -> Union[MedusaModelLlama, MedusaModelMistral]:
+    ) -> Union[MedusaModelLlama, MedusaModelMistral, MedusaModelQwen2]:
         # Manually load config to ensure that the medusa_num_heads parameter is loaded
         try:
             config = AutoConfig.from_pretrained(pretrained_model_name_or_path)
@@ -417,6 +423,12 @@ class MedusaModel():
                 pretrained_model_name_or_path,
                 *args,
                 **kwargs,
+            )
+        elif config.model_type == 'qwen2':
+            return MedusaModelQwen2.from_pretrained(
+                pretrained_model_name_or_path,
+                *args,
+                **kwargs
             )
         else:
             raise ValueError("Only support llama and mistral for now!!")

@@ -1,7 +1,6 @@
 import torch
 import torch.nn.functional as F
 from typing import List, Tuple, Union, Dict
-from medusa_model import MedusaModelABC, MedusaModelLlama, MedusaModelMistral
 
 TOPK=10 # topk for sparse tree (10 is a placeholder and it is sufficient)
 
@@ -159,7 +158,7 @@ def generate_medusa_buffers(medusa_choices: list[list], device="cuda") -> Dict[s
 
 def initialize_medusa(
         input_ids: torch.Tensor, 
-        model: Union[MedusaModelLlama, MedusaModelMistral],
+        model, #: Union[MedusaModelLlama, MedusaModelMistral],
         medusa_attn_mask: torch.Tensor, 
         past_key_values: List[torch.Tensor])->Tuple[torch.Tensor, torch.Tensor]:    
     """
@@ -196,7 +195,7 @@ def initialize_medusa(
 
 
 def reset_medusa_mode(
-    model: Union[MedusaModelLlama, MedusaModelMistral],
+    model #: Union[MedusaModelLlama, MedusaModelMistral],
 ):
     """
     Resets the Medusa settings and the past key-values to their initial state.
@@ -700,4 +699,4 @@ def update_inference_inputs(
 if __name__ == "__main__":
     from medusa_choices import mc_sim_7b_63
     # breakpoint()
-    generate_medusa_buffers(medusa_choices=mc_sim_7b_63)
+    a = generate_medusa_buffers(medusa_choices=mc_sim_7b_63, device='cpu')
