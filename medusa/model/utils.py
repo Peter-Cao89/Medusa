@@ -56,7 +56,7 @@ def generate_medusa_buffers(medusa_choices: list[list], device="cuda") -> Dict[s
     # 计算总的节点数，+1是为了包含跟节点
     medusa_len = len(sorted_medusa_choices) + 1
 
-    # 第二步：统计各深度层级的节点数量
+    # 第二步：统计各深度层级的节点数量，用于跟踪在每个特定深度有多少个选择
     # Initialize depth_counts to keep track of how many choices have a particular depth
     # depth_counts用于记录不同深度的节点数量， prev_depth为最大深度。用于后续构造注意力掩码与位置ID
     depth_counts = []
@@ -78,17 +78,18 @@ def generate_medusa_buffers(medusa_choices: list[list], device="cuda") -> Dict[s
     start = 0
     for i in range(len(depth_counts)):  # 逐深度遍历
         for j in range(depth_counts[i]):  # 遍历每个深度的值
+            idx = start + j
             # 从排序的medusa choice值中获取当前的medusa choice值
-            cur_medusa_choice = sorted_medusa_choices[start + j]
-            # retrieve ancestor position
+            cur_medusa_choice = sorted_medusa_choices[idx]
+            # retrieve ancestor position，抽取祖先节点
             if len(cur_medusa_choice) == 1:
                 continue  # 第一层节点无需额外处理
-            ancestor_idx = []
+            ancestor_idx = [] # 存放祖先的索引
             # 获取每个深度不同节点的祖先节点在sorted_medusa_choices中的索引,并存储到ancestor_idx中
             for c in range(len(cur_medusa_choice) - 1):
                 ancestor_idx.append(sorted_medusa_choices.index(
                     cur_medusa_choice[:c+1]) + 1)
-            medusa_attn_mask[j + start + 1, ancestor_idx] = 1  # 将对应的节点的值改为1
+            medusa_attn_mask[idx + 1, ancestor_idx] = 1  # 将对应的节点的值改为1
         start += depth_counts[i]
 
     # 为medusa结构构造树索引。节点索引 = 路径末token ID + TOPK * 深度 + 1。TOPK为全局变量，表示每层生成的候选token数量。
@@ -119,7 +120,7 @@ def generate_medusa_buffers(medusa_choices: list[list], device="cuda") -> Dict[s
     retrieve_indices_nest = []
     retrieve_paths = []
     for i in range(len(sorted_medusa_choices)):
-        cur_medusa_choice = sorted_medusa_choices[-i-1]  # 倒序处理,避免路径重复
+        cur_medusa_choice = sorted_medusa_choices[-i - 1]  # 倒序处理,避免路径重复
         retrieve_indice = []
         if cur_medusa_choice in retrieve_paths:
             continue
@@ -170,18 +171,18 @@ def initialize_medusa(
     2. Sets the Medusa attention mask within the base model.
 
     Args:
-    - input_ids (torch.Tensor): The input tensor containing token ids. 包含输入token ids的张量
-    - model (MedusaLMHead): The model containing the Medusa layers and base model. 包含Medusa层与基础模型的MedusaLMHead的模型实例
-    - medusa_attn_mask (torch.Tensor): The attention mask designed specifically for the Medusa structure. 专门为medusa结构设计的attention mask
+    - input_ids (torch.Tensor): The input tensor containing token ids. 包含输入token ids的张量 [batch size, seq len]
+    - model (MedusaLMHead): The model containing the Medusa layers and base model. 包含Medusa层与基础模型的MedusaLMHead的模型实例: MedusaModelQwen2
+    - medusa_attn_mask (torch.Tensor): The attention mask designed specifically for the Medusa structure. 专门为medusa结构设计的attention mask [1,1,medusa_len,medusa_len]
     - past_key_values (list of torch.Tensor): Contains past hidden states and past attention values. 包含历史隐状态与历史attention值的张量
 
     Returns:
     - medusa_logits (torch.Tensor): Logits from the Medusa heads.
     - logits (torch.Tensor): Original logits from the base model.
     """
-    # 执行首次前向传播。
-    # medusa_logits: 来自 Medusa 头的预测(形状: [batch_size, num_heads, vocab_size])
-    # outputs: 中间层输出
+    # 执行首次前向传播。根据MRO原则，调用MedusaModelABC的forward函数
+    # medusa_logits: 来自 Medusa 头的预测(形状: [medusa head nums, batch_size, seq_len, vocab_size])
+    # outputs: Qwen2Model/LlamaModel的输出
     # logits: 基础模型的原始预测（形状: [batch_size, seq_len, vocab_size]）
     medusa_logits, outputs, logits = model(
         input_ids,
@@ -401,7 +402,7 @@ def generate_candidates(
 
 
 def tree_decoding(
-    model: Union[MedusaModelLlama, MedusaModelMistral],   # 使用的语言模型（通常是一个 nn.Module）
+    model,   # 使用的语言模型（通常是一个 nn.Module）
     tree_candidates: torch.Tensor,        # 树状结构的候选 token 序列(形状如: [1, M])
     past_key_values: torch.Tensor,        # 注意力机制的KV缓存，用于避免重复计算历史token
     medusa_position_ids: torch.Tensor,    # Medusa buffer中对应的 position IDs
