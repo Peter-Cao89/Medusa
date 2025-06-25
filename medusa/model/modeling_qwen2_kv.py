@@ -458,7 +458,7 @@ class Qwen2DecoderLayer(nn.Module):
                 f"Sliding Window Attention is enabled but not implemented for `{config._attn_implementation}`; "
                 "unexpected results may be encountered."
             )
-        self.self_attn = QWEN2_ATTENTION_CLASSES[config._attn_implementation](config, layer_idx)
+        self.self_attn = QWEN2_ATTENTION_CLASSES["eager"](config, layer_idx)
 
         self.mlp = Qwen2MLP(config)
         self.input_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -678,7 +678,7 @@ class Qwen2Model(Qwen2PreTrainedModel):
                 for layer_idx in range(config.num_hidden_layers)
             ]
         )
-        self._attn_implementation = config._attn_implementation
+        self._attn_implementation = "eager"
         self.norm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.rotary_emb = Qwen2RotaryEmbedding(config=config)
 

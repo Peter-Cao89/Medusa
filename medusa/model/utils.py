@@ -177,8 +177,8 @@ def initialize_medusa(
     - past_key_values (list of torch.Tensor): Contains past hidden states and past attention values. 包含历史隐状态与历史attention值的张量
 
     Returns:
-    - medusa_logits (torch.Tensor): Logits from the Medusa heads.
-    - logits (torch.Tensor): Original logits from the base model.
+    - medusa_logits (torch.Tensor): Logits from the Medusa heads. 形状为[medusa head nums, batch size, seq len, vocab size]
+    - logits (torch.Tensor): Original logits from the base model. 形状为[bacth size, seq len, vocab size]
     """
     # 执行首次前向传播。根据MRO原则，调用MedusaModelABC的forward函数
     # medusa_logits: 来自 Medusa 头的预测(形状: [medusa head nums, batch_size, seq_len, vocab_size])
@@ -374,12 +374,12 @@ def generate_candidates(
         else:
             raise NotImplementedError
     # Extract the TOPK candidates from the medusa logits.
-    # 对medusa logits在最后一个时间步（-1）、第一个 head（0）的结果执行TOPK采样，得到candidates的索引
+    # 对medusa logits在最后一个时间步(-1)、第一个Batch的结果中的词表中执行TOPK采样，得到candidates的索引
     candidates_medusa_logits = torch.topk(medusa_logits[:, 0, -1], TOPK, dim = -1).indices
 
     # Combine the selected candidate from the original logits with the topk medusa logits.
     # 将主模型logits中采样的候选logits(candidates_logit)与top-k的medusa候选logits进行拼接(candidates_medusa_logits)
-    # 输出形状：(1 + TOPK,)
+    # 因为对candidates_medusa_logits.view(-1)操作，输出形状：(1 + TOPK * medusa head nums,)
     candidates = torch.cat([candidates_logit, candidates_medusa_logits.view(-1)], dim=-1)
 
     # Map the combined candidates to the tree indices to get tree candidates.
@@ -396,8 +396,8 @@ def generate_candidates(
 
     # Unsqueeze the tree candidates for dimension consistency.
     tree_candidates = tree_candidates.unsqueeze(0)
-    # 笛卡尔形式的候选 token，形状 (N,)
-    # 树结构形式的候选 token，形状 (1, M)
+    # 笛卡尔形式的候选 token，形状 (N, medusa heads)，与retrieve_indices的shape一样
+    # 树结构形式的候选 token，形状 (1, tree_indices.shape)
     return cart_candidates, tree_candidates
 
 
